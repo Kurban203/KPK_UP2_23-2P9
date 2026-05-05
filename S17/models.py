@@ -38,7 +38,7 @@ def init_db():
     db.connect()
     db.create_tables([Room, Equipment, RoomEquipment], safe=True)
     db.close()
-    print("✅ База данных создана!")
+    print("База данных создана!")
 
 if __name__ == '__main__':
     init_db()
