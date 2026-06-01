@@ -1,82 +1,81 @@
-"""
-Room Service (Сервис аудиторий)
-Модели для работы с базой данных
+import os
+from peewee import *
+from playhouse.sqlite_ext import SqliteExtDatabase
 
-Стуктура:
-- Room: аудитория (кабинет, лаборатория, мастерская)
-  - number: номер аудитории
-  - floor: этаж
-  - building: корпус
-  - capacity: вместимость
-  - is_active: флаг мягкого удаления
-
-Уникальное ограничение: (number, building) - в одном корпусе не может быть
-двух аудиторий с одинаковым номером.
-"""
-
-from peewee import SqliteDatabase, Model, CharField, IntegerField, BooleanField
-
-# Подключение к базе данных SQLite
-db = SqliteDatabase('rooms.db')
+# Инициализация базы данных
+db = SqliteExtDatabase('rooms.db', pragmas={
+    'journal_mode': 'wal',
+    'cache_size': -1024 * 64,
+})
 
 
+def init_db():
+    """Инициализация базы данных и создание таблиц"""
+    db.connect()
+    db.create_tables([Building, Room, Equipment, RoomEquipment], safe=True)
+    db.close()
+
+
+# Модель: Корпус
+class Building(Model):
+    id = AutoField()
+    name = CharField(max_length=100, unique=True, null=False)  # Название корпуса
+    address = CharField(max_length=255, null=False)  # Адрес
+    floors_count = IntegerField(null=False)  # Количество этажей
+
+    class Meta:
+        database = db
+        table_name = 'buildings'
+
+
+# Модель: Аудитория (основная сущность)
 class Room(Model):
-    """
-    Модель аудитории
-    """
-    number = CharField(
-        max_length=20,
-        verbose_name='Номер аудитории'
-    )
-    floor = IntegerField(
-        verbose_name='Этаж',
-        constraints=[SQL('CHECK (floor >= 0 AND floor <= 20)')]
-    )
-    building = CharField(
-        max_length=50,
-        verbose_name='Корпус'
-    )
-    capacity = IntegerField(
-        verbose_name='Вместимость',
-        constraints=[SQL('CHECK (capacity >= 1 AND capacity <= 500)')]
-    )
-    is_active = BooleanField(
-        default=True,
-        verbose_name='Активна'
-    )
+    id = AutoField()
+    number = CharField(max_length=20, null=False)  # Номер аудитории
+    floor = IntegerField(null=False)  # Этаж
+    capacity = IntegerField(null=False)  # Вместимость
+    building_id = ForeignKeyField(Building, backref='rooms', on_delete='CASCADE', null=False)
+    has_computers = BooleanField(default=False, null=False)  # Наличие компьютеров
+    is_active = BooleanField(default=True, null=False)  # Активность записи
 
     class Meta:
         database = db
         table_name = 'rooms'
+        indexes = (
+            (('number', 'building_id'), True),  # Уникальная комбинация
+        )
 
 
-def init_db():
-    """
-    Инициализация базы данных:
-    1. Подключение к БД
-    2. Создание таблиц
-    3. Создание составного уникального индекса
-    """
-    db.connect()
-    
-    # Создание таблицы (если не существует)
-    db.create_tables([Room], safe=True)
-    
-    # Составной уникальный индекс на (number, building)
-    # Обеспечивает уникальность комбинации номера и корпуса
-    db.execute_sql("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_number_building 
-        ON rooms (number, building);
-    """)
+# Модель: Оборудование
+class Equipment(Model):
+    id = AutoField()
+    name = CharField(max_length=100, unique=True, null=False)  # Название оборудования
+    description = TextField(null=True)  # Описание
+
+    class Meta:
+        database = db
+        table_name = 'equipments'
 
 
+# Модель: Связь аудиторий и оборудования (многие ко многим)
+class RoomEquipment(Model):
+    id = AutoField()
+    room_id = ForeignKeyField(Room, backref='equipment_links', on_delete='CASCADE', null=False)
+    equipment_id = ForeignKeyField(Equipment, backref='room_links', on_delete='CASCADE', null=False)
+    quantity = IntegerField(default=1, null=False)  # Количество единиц оборудования
+
+    class Meta:
+        database = db
+        table_name = 'room_equipment'
+        indexes = (
+            (('room_id', 'equipment_id'), True),  # Уникальная пара
+        )
+
+
+# Функция для получения сессии базы данных
 def get_db():
-    """Возвращает экземпляр базы данных"""
-    return db
-
-
-# Точка входа для инициализации БД
-if __name__ == '__main__':
-    init_db()
-    print("База данных 'rooms.db' успешно инициализирована.")
-    print("Создана таблица 'rooms' с уникальным ограничением (number, building).")
+    db.connect()
+    try:
+        yield db
+    finally:
+        db.close()
