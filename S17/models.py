@@ -1,7 +1,5 @@
-import os
 from peewee import *
 from playhouse.sqlite_ext import SqliteExtDatabase
-from playhouse.sqlite_ext import JSONField
 
 # Инициализация базы данных
 db = SqliteExtDatabase('rooms.db', pragmas={
@@ -17,18 +15,20 @@ def init_db():
     # Создание таблиц
     db.create_tables([Building, Room, Equipment, RoomEquipment], safe=True)
     
-    # Для SQLite нужно создавать CHECK-ограничения через PRAGMA или raw SQL
-    # Добавляем проверки для полей floor и capacity
+    # Добавление CHECK-ограничений для SQLite
     cursor = db.cursor()
     
-    # Проверка для поля floor (от -2 до 25)
-    cursor.execute("""
-        SELECT sql FROM sqlite_master 
-        WHERE type='table' AND name='rooms'
-    """)
-    result = cursor.fetchone()
-    if result and 'CHECK' not in result[0]:
-        # Пересоздаём таблицу с CHECK-ограничениями
+    # Проверяем и добавляем ограничение для floor
+    cursor.execute("PRAGMA table_info(rooms)")
+    columns = cursor.fetchall()
+    has_floor_check = False
+    has_capacity_check = False
+    
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='rooms'")
+    table_sql = cursor.fetchone()[0]
+    
+    if 'CHECK' not in table_sql:
+        # Создаём временную таблицу с CHECK-ограничениями
         cursor.execute("""
             CREATE TABLE rooms_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,10 +42,14 @@ def init_db():
                 UNIQUE(number, building_id)
             )
         """)
+        
+        # Копируем данные
         cursor.execute("""
             INSERT INTO rooms_new (id, number, floor, capacity, building_id, has_computers, is_active)
             SELECT id, number, floor, capacity, building_id, has_computers, is_active FROM rooms
         """)
+        
+        # Заменяем таблицу
         cursor.execute("DROP TABLE rooms")
         cursor.execute("ALTER TABLE rooms_new RENAME TO rooms")
     
@@ -55,9 +59,9 @@ def init_db():
 # Модель: Корпус
 class Building(Model):
     id = AutoField()
-    name = CharField(max_length=100, unique=True, null=False)  # Название корпуса
-    address = CharField(max_length=255, null=False)  # Адрес
-    floors_count = IntegerField(null=False)  # Количество этажей
+    name = CharField(max_length=100, unique=True, null=False)
+    address = CharField(max_length=255, null=False)
+    floors_count = IntegerField(null=False)
 
     class Meta:
         database = db
@@ -67,31 +71,27 @@ class Building(Model):
 # Модель: Аудитория (основная сущность)
 class Room(Model):
     id = AutoField()
-    number = CharField(max_length=20, null=False)  # Номер аудитории
-    floor = IntegerField(null=False)  # Этаж
-    capacity = IntegerField(null=False)  # Вместимость
+    number = CharField(max_length=20, null=False)
+    floor = IntegerField(null=False)
+    capacity = IntegerField(null=False)
     building_id = ForeignKeyField(Building, backref='rooms', on_delete='CASCADE', null=False)
-    has_computers = BooleanField(default=False, null=False)  # Наличие компьютеров
-    is_active = BooleanField(default=True, null=False)  # Активность записи
+    has_computers = BooleanField(default=False, null=False)
+    is_active = BooleanField(default=True, null=False)
 
     class Meta:
         database = db
         table_name = 'rooms'
         indexes = (
-            (('number', 'building_id'), True),  # Уникальная комбинация
+            (('number', 'building_id'), True),
         )
-        # Для SQLite CHECK-ограничения задаются через raw SQL в init_db()
-        # так как Peewee не поддерживает их декларативно для SQLite
-    
+
     def save(self, *args, **kwargs):
         """Валидация данных перед сохранением"""
-        # Проверка диапазона floor
         if self.floor is not None and not (-2 <= self.floor <= 25):
-            raise ValueError(f"floor должно быть в диапазоне от -2 до 25, получено: {self.floor}")
+            raise ValueError(f"floor должно быть от -2 до 25, получено: {self.floor}")
         
-        # Проверка диапазона capacity
         if self.capacity is not None and not (1 <= self.capacity <= 500):
-            raise ValueError(f"capacity должно быть в диапазоне от 1 до 500, получено: {self.capacity}")
+            raise ValueError(f"capacity должно быть от 1 до 500, получено: {self.capacity}")
         
         super().save(*args, **kwargs)
 
@@ -99,8 +99,8 @@ class Room(Model):
 # Модель: Оборудование
 class Equipment(Model):
     id = AutoField()
-    name = CharField(max_length=100, unique=True, null=False)  # Название оборудования
-    description = TextField(null=True)  # Описание
+    name = CharField(max_length=100, unique=True, null=False)
+    description = TextField(null=True)
 
     class Meta:
         database = db
@@ -112,17 +112,16 @@ class RoomEquipment(Model):
     id = AutoField()
     room_id = ForeignKeyField(Room, backref='equipment_links', on_delete='CASCADE', null=False)
     equipment_id = ForeignKeyField(Equipment, backref='room_links', on_delete='CASCADE', null=False)
-    quantity = IntegerField(default=1, null=False)  # Количество единиц оборудования
+    quantity = IntegerField(default=1, null=False)
 
     class Meta:
         database = db
         table_name = 'room_equipment'
         indexes = (
-            (('room_id', 'equipment_id'), True),  # Уникальная пара
+            (('room_id', 'equipment_id'), True),
         )
 
 
-# Функция для получения сессии базы данных
 def get_db():
     db.connect()
     try:
